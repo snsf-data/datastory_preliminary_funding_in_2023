@@ -1,0 +1,339 @@
+---
+title: "`r params$title`"
+format:
+  html:
+    # To use instead of self-contained that has been deprecated
+    # Using custom page layout (via 'style.css')
+    # Open link in a new window by default
+    # Display footnotes in pop-up window when hovering on it
+    toc: false
+    css: ["style.css"]
+    mainfont: Theinhardt
+    fontsize: "16px"
+    embed-resources: true
+    page-layout: custom
+    link-external-newwindow: true
+    footnotes-hover: true
+params:
+  title: ""
+  publication_date: ""
+  lang: "en"
+  doi: ""
+  github_url: ""
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r general-setup}
+#| include: false
+
+## This file contains the ENGLISH version of the data story
+
+# Set general chunk options
+knitr::opts_chunk$set(
+  echo = FALSE,
+  fig.showtext = TRUE,
+  fig.retina = 3,
+  fig.align = "center",
+  warning = FALSE,
+  message = FALSE
+)
+
+# Install snf.datastory package if not available, otherwise load it
+if (!require("snf.datastory")) {
+  if (!require("devtools")) {
+    install.packages("devtools")
+    library(devtools)
+  }
+  install_github("snsf-data/snf.datastory")
+  library(snf.datastory)
+}
+
+# Load packages
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(conflicted)
+library(jsonlite)
+library(here)
+library(glue)
+library(ggiraph)
+library(showtext)
+library(systemfonts)
+library(patchwork)
+
+# Conflict preferences
+conflict_prefer("filter", "dplyr")
+conflict_prefer("get_datastory_theme", "snf.datastory")
+conflict_prefer("get_datastory_scheme", "snf.datastory")
+
+source("R/make_desktop_plot.R")
+source("R/make_mobile_plot.R")
+source("R/prep_data.R")
+
+is_theinhardt_available <- file.exists(here("fonts", "TheinhardtReg.otf"))
+
+if (is_theinhardt_available) {
+  
+  sysfonts::font_add(
+    family = "Theinhardt",
+    regular = here("fonts", "TheinhardtReg.otf"),
+    bold = here("fonts", "TheinhardtBold.otf"),
+    bolditalic = here("fonts", "TheinhardtBoldIt.otf"),
+    italic = here("fonts", "TheinhardtRegIt.otf"),
+  )
+  
+  # Need to register the font to allow its use by ggiraph when creating SVG
+  # files.
+  if (!font_family_exists("Theinhardt")) {
+    
+    # Register existing/downloaded fonts
+    register_font(
+      name = "Theinhardt",
+      plain = list("fonts/TheinhardtReg.otf", 0),
+      bold = list("fonts/TheinhardtBold.otf", 0),
+      italic = list("fonts/TheinhardtRegIt.otf", 0),
+      bolditalic = list("fonts/TheinhardtBoldIt.otf", 0)
+    )
+  }
+  
+  font <- "Theinhardt"
+  
+} else {
+  
+  font <- "Arial"
+  
+}
+
+# Need if we want to use the registered font in ggiraph plots
+showtext_auto()
+
+# Increase showtext package font resolution
+showtext_opts(dpi = 320)
+
+# Set the locale for date formatting (Windows)
+Sys.setlocale(
+  "LC_TIME",
+  switch(
+    params$lang,
+    en = "English",
+    de = "German",
+    fr = "French"
+  )
+)
+
+# Create function to print number with local language-specific format
+print_num <- function(x) snf.datastory::print_num(x, lang = params$lang)
+
+# Knitr hook for local formatting of printed numbers
+knitr::knit_hooks$set(
+  inline <- function(x) {
+    if (!is.numeric(x)) {
+      x
+    } else {
+      print_num(x)
+    }
+  }
+)
+
+# Function that returns the desired language version of a string, given three
+# language strings are provided to the function.
+translate <- function(en_string = "NOT TRANSLATED",
+                      de_string = "NOT TRANSLATED",
+                      fr_string = "NOT TRANSLATED",
+                      lang = "en") {
+  
+  string <-
+    case_when(
+      lang == "en" ~ en_string, 
+      lang == "de" ~ de_string, 
+      lang == "fr" ~ fr_string, 
+      TRUE ~ "NO VALID LANGUAGE SPECIFIED"
+    )
+  
+  return(string)
+  
+}
+
+```
+
+```{r print-header-infos}
+#| results: asis
+
+# Add publication date to header
+cat(format(as_datetime(params$publication_date), "%d.%m.%Y"))
+```
+
+```{r story-specific-setup}
+#| include: false
+
+# Load data about funding in 2023
+funding_in_2023 <- 
+  read_csv(here("data", "prelim_funding_in_2023_2024-02-16.csv"))
+
+# Übergangsmassnahmen Horizon Europe
+# Get the amount going to Horizon Transitional Measures
+horizon_measures <-
+  funding_in_2023 |> 
+  filter(str_detect(FundingInstrumentGaReporting, "Horizon")) |> 
+  summarise(sum_amount = sum(AmountGranted)) |> 
+  pull()
+
+amount_by_institution <-
+  funding_in_2023 |>
+  summarise(
+    AmountGranted = paste0(round(sum(AmountGranted) / 1000000), " Mio. CHF"),
+    .by = ResearchInstitutionType
+  )
+
+total_no_he <-
+  funding_in_2023 |>
+  filter(!str_starts(FundingInstrumentGaReporting, "Horizon")) |>
+  summarise(sum = round(sum(AmountGranted) / 1000000)) |>
+  pull(sum)
+
+total_projects <-
+  funding_in_2023 |>
+  filter(FundingInstrumentGaLevel1 == "Projects") |>
+  summarise(sum = round(sum(AmountGranted) / 1000000)) |>
+  pull(sum)
+
+total_careers <-
+  funding_in_2023 |>
+  filter(FundingInstrumentGaLevel1 == "Careers") |>
+  summarise(sum = round(sum(AmountGranted) / 1000000)) |>
+  pull(sum)
+
+total_prog <-
+  funding_in_2023 |>
+  filter(
+    FundingInstrumentGaLevel1 == "Programmes",
+    !str_starts(FundingInstrumentGaReporting, "Horizon")
+  ) |>
+  summarise(sum = round(sum(AmountGranted) / 1000000)) |>
+  pull(sum)
+
+total_he <-
+  funding_in_2023 |>
+  filter(str_starts(FundingInstrumentGaReporting, "Horizon")) |>
+  summarise(sum = round(sum(AmountGranted) / 1000000)) |>
+  pull(sum)
+
+```
+
+
+<!-- Short lead (2-3 sentences) in bold -->
+
+**First preliminary figures: In 2023, the SNSF invested `r total_no_he` million francs in new projects, fellowships and publications of its regular funding schemes. We awarded a further `r total_he` million for the Horizon Europe transitional measures.**
+
+`r total_projects` million francs went into project funding, with which experienced researchers realise their own ideas. We approved `r total_prog` million francs for work by research groups in programmes and `r total_careers` million for early-career researchers through the career funding schemes. 
+
+Switzerland is not associated with Horizon Europe, the EU's research and innovation programme. Thus the SNSF approved `r total_he` million francs for projects in the context of transitional measures last year. This figure also includes the budget of the Eccellenza funding scheme, which we have integrated into the transitional measures. Established researchers as well as early-career researchers are benefiting from these grants. 
+
+In addition, the SNSF pays the universities around 130 million francs as reimbursement for indirect research costs (overheads) incurred as a result of the new projects. 
+
+At the end of 2023, `r print_num(5673)` projects funded by us were in progress, involving around `r print_num(21000)` researchers at universities and other institutions. Most projects take several years to complete. 
+
+The graphic illustrates the distribution of approved funding across the various categories. Due to the Horizon Europe transitional measures, the figures are only comparable with the figures of previous years to a limited extent.
+
+::: {.hide-mobile .hide-tablet .widemedia}
+::: plot-box
+::: plot-title
+Approved SNSF grants in 2023 (preliminary figures)
+:::
+```{r plot-desktop-1}
+#| out-width: "100%"
+#| fig-height: 3
+
+# Create ggiraph object
+girafe(
+  ggobj = draw_funding_portfolio_5(params$lang), 
+  height_svg = 3, 
+  options = list(
+    opts_toolbar(saveaspng = FALSE),
+    opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+    opts_tooltip(
+      css = get_ggiraph_tooltip_css(),
+      opacity = 0.8,
+      delay_mouseover = 0,
+      delay_mouseout = 0
+    )
+  )
+)
+
+```
+
+```{r plot-desktop-2}
+#| out-width: "100%"
+#| fig-height: 1.8
+
+# Create ggiraph object
+girafe(
+  ggobj = draw_funding_portfolio_5_horizon(params$lang), 
+  height_svg = 1.8, 
+  options = list(
+    opts_toolbar(saveaspng = FALSE),
+    opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+    opts_tooltip(
+      css = get_ggiraph_tooltip_css(),
+      opacity = 0.8,
+      delay_mouseover = 0,
+      delay_mouseout = 0
+    )
+  )
+)
+
+```
+::: caption
+Data: SNSF funding awarded in 2023 (preliminary figures as at 16 February 2024). Excluding reimbursement of universities’ indirect research costs (CHF 130 million) and contributions for open access journal articles (CHF 4 million).
+:::
+:::
+:::
+
+::: hide-desktop
+::: plot-box
+::: plot-title
+Approved SNSF grants in 2023 (preliminary figures)
+:::
+```{r example-plot-2-mobile}
+#| out-width: "100%"
+#| fig-height: 10
+# Create ggiraph object
+girafe(
+  ggobj = draw_funding_portfolio_5_mob(params$lang),
+  height_svg = 10,
+  options = list(
+    opts_toolbar(saveaspng = FALSE),
+    opts_hover(css = "fill:#F08262;stroke:#F08262;"),
+    opts_tooltip(
+      css = get_ggiraph_tooltip_css(),
+      opacity = 0.8,
+      delay_mouseover = 0,
+      delay_mouseout = 0
+    )
+  )
+)
+
+```
+::: caption
+Data: SNSF funding awarded in 2023 (preliminary figures as at 16 February 2024). Excluding reimbursement of universities’ indirect research costs (CHF 130 million) and contributions for open access journal articles (CHF 4 million).
+:::
+:::
+:::
+
+Data, text and code of this data story are [available on Github](`r params$github_url`) and [archived on Zenodo](`r params$doi`). <br>DOI: `r str_remove(params$doi, "https://doi.org/")`
+
+```{r prevent-internal-snsf-packages, include=FALSE}
+#| include: false
+
+# Internal SNSF packages must not be used in data stories, as their
+# pre-processing functions are internal and the corporate design differs from
+# the data portal.
+if (any(c("snfverse", "snf.preprocessing", "snf.plot") %in% 
+        loadedNamespaces())) {
+  stop(glue(
+    "You must not use internal SNSF packages in data stories.",
+    " Please resort to snf.datastory."
+  ))
+}
+```
